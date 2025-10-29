@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  web:
+    image: "{{ app_image | default('nginxdemos/hello:plain-text') }}"
+    container_name: "{{ app_name | default('test_app') }}"
+    restart: always
+    ports:
+      - "{{ app_internal_port | default('8080') }}:80"
+    environment:
+      - APP_ENV={{ environment | default('dev') }}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    name: "{{ app_network | default('app_network') }}"
