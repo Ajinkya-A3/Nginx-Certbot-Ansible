@@ -13,8 +13,8 @@ app_container_name: "myapp"            # Name for the main app container
 app_port: 8080                         # Port exposed by your app inside the container
 
 # You can add more services (e.g., db_image, redis_image) if needed
-db_image: "mongo:7"
-db_container_name: "mongodb"
+# db_image: "mongo:7"
+# db_container_name: "mongodb"
 
 # =========================================================
 # 🔒 Certbot + HTTPS Configuration
@@ -32,7 +32,3 @@ nginx_ssl_dir: "/etc/letsencrypt/live/{{ server_name }}"
 nginx_access_log: "/var/log/nginx/{{ server_name }}.access.log"
 nginx_error_log: "/var/log/nginx/{{ server_name }}.error.log"
 
-# =========================================================
-# ⚙️ Miscellaneous
-# =========================================================
-timezone: "UTC"
