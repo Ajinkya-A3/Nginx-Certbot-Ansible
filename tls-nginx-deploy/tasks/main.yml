@@ -1,3 +1,118 @@
-#SPDX-License-Identifier: MIT-0
 ---
-# tasks file for tls-nginx-deploy
+# ========================================================
+# 🚀 Install Docker Engine + Compose v2 (from official repo)
+# ========================================================
+
+- name: Remove old Docker versions if present
+  apt:
+    name:
+      - docker
+      - docker-engine
+      - docker.io
+      - containerd
+      - runc
+    state: absent
+
+- name: Install required system dependencies
+  apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+
+- name: Add Docker’s official GPG key
+  ansible.builtin.shell: |
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Add Docker repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: |
+      deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable
+
+- name: Install Docker Engine and Compose v2
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Ensure docker service is running
+  service:
+    name: docker
+    state: started
+    enabled: true
+
+# ========================================================
+# 📦 Deploy app using Docker Compose v2
+# ========================================================
+
+- name: Create compose project directory
+  file:
+    path: "{{ compose_project_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Template docker-compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ compose_project_path }}/docker-compose.yml"
+    mode: '0644'
+
+- name: Deploy application using Docker Compose v2
+  community.docker.docker_compose:
+    project_src: "{{ compose_project_path }}"
+    state: present
+
+# ========================================================
+# 🌐 Install Nginx + Certbot for HTTPS
+# ========================================================
+
+- name: Install Nginx and Certbot
+  apt:
+    name:
+      - nginx
+      - python3-certbot-nginx
+    state: present
+    update_cache: true
+
+- name: Create webroot for Certbot
+  file:
+    path: "{{ certbot_webroot_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Template Nginx config
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/sites-available/{{ server_name }}
+  notify: reload nginx
+
+- name: Enable Nginx site
+  file:
+    src: /etc/nginx/sites-available/{{ server_name }}
+    dest: /etc/nginx/sites-enabled/{{ server_name }}
+    state: link
+  notify: reload nginx
+
+- name: Request Let's Encrypt certificate
+  community.letsencrypt.certbot:
+    domains: ["{{ server_name }}"]
+    email: "{{ email }}"
+    webroot_path: "{{ certbot_webroot_path }}"
+    authenticator: "{{ certbot_method }}"
+    state: present
+    agree_tos: true
+    force: false
+  notify: reload nginx
