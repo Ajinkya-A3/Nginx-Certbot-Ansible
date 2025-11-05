@@ -1,6 +1,6 @@
 ---
 # ========================================================
-# 🚀 Install Docker Engine + Compose v2 (from official repo)
+# 🚀 Install Docker Engine + Compose v2
 # ========================================================
 
 - name: Remove old Docker versions if present
@@ -55,64 +55,80 @@
     enabled: true
 
 # ========================================================
-# 📦 Deploy app using Docker Compose v2
+# 📦 Deploy Application using Docker Compose
 # ========================================================
 
-- name: Create compose project directory
+- name: Create project directory for Docker Compose
   file:
     path: "{{ compose_project_path }}"
     state: directory
     mode: '0755'
 
-- name: Template docker-compose file
+- name: Template docker-compose.yaml
   template:
     src: docker-compose.yaml.j2
     dest: "{{ compose_project_path }}/docker-compose.yaml"
     mode: '0644'
 
-- name: Deploy application using Docker Compose v2
+- name: Deploy application with Docker Compose v2
   community.docker.docker_compose:
     project_src: "{{ compose_project_path }}"
     state: present
 
 # ========================================================
-# 🌐 Install Nginx + Certbot for HTTPS
+# 🌐 Install and Configure Nginx + Certbot (certonly)
 # ========================================================
 
 - name: Install Nginx and Certbot
   apt:
     name:
       - nginx
-      - python3-certbot-nginx
+      - certbot
     state: present
     update_cache: true
 
-- name: Create webroot for Certbot
+- name: Create webroot for Certbot HTTP challenge
   file:
     path: "{{ certbot_webroot_path }}"
     state: directory
     mode: '0755'
 
-- name: Template Nginx config
+# --------------------------------------------------------
+# 🔒 Obtain SSL Certificate (Certbot certonly mode)
+# --------------------------------------------------------
+- name: Obtain Let's Encrypt SSL certificate using Certbot
+  ansible.builtin.command:
+    cmd: >
+      certbot certonly
+      --non-interactive
+      --agree-tos
+      --email {{ email }}
+      --webroot -w {{ certbot_webroot_path }}
+      -d {{ server_name }}
+  args:
+    creates: "/etc/letsencrypt/live/{{ server_name }}/fullchain.pem"
+  register: certbot_result
+
+# --------------------------------------------------------
+# 🧩 Configure Nginx with the new certificate
+# --------------------------------------------------------
+- name: Template Nginx configuration
   template:
     src: nginx.conf.j2
-    dest: /etc/nginx/sites-available/{{ server_name }}
+    dest: "{{ nginx_sites_available }}/{{ server_name }}"
+    mode: '0644'
   notify: reload nginx
 
 - name: Enable Nginx site
   file:
-    src: /etc/nginx/sites-available/{{ server_name }}
-    dest: /etc/nginx/sites-enabled/{{ server_name }}
+    src: "{{ nginx_sites_available }}/{{ server_name }}"
+    dest: "{{ nginx_sites_enabled }}/{{ server_name }}"
     state: link
   notify: reload nginx
 
-- name: Request Let's Encrypt certificate
-  community.letsencrypt.certbot:
-    domains: ["{{ server_name }}"]
-    email: "{{ email }}"
-    webroot_path: "{{ certbot_webroot_path }}"
-    authenticator: "{{ certbot_method }}"
-    state: present
-    agree_tos: true
-    force: false
+- name: Disable default Nginx site (optional)
+  file:
+    path: "{{ nginx_sites_enabled }}/default"
+    state: absent
   notify: reload nginx
+
