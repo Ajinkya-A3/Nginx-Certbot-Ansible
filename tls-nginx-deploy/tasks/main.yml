@@ -1,134 +1,158 @@
 ---
 # ========================================================
-# 🚀 Install Docker Engine + Compose v2
+# 🐳 Install Docker Engine + Compose v2 via Shell (Ubuntu 24.04)
 # ========================================================
 
 - name: Remove old Docker versions if present
-  apt:
-    name:
-      - docker
-      - docker-engine
-      - docker.io
-      - containerd
-      - runc
-    state: absent
-
-- name: Install required system dependencies
-  apt:
-    name:
-      - ca-certificates
-      - curl
-      - gnupg
-      - lsb-release
-    state: present
-    update_cache: true
-
-- name: Add Docker’s official GPG key
+  become: yes
   ansible.builtin.shell: |
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
+    apt-get remove -y docker docker-engine docker.io containerd runc || true
+  ignore_errors: yes
+
+# ========================================================
+# Install prerequisites
+# ========================================================
+- name: Install required dependencies
+  become: yes
+  ansible.builtin.shell: |
+    apt-get update -y
+    apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common
+
+# ========================================================
+# Add Docker’s official GPG key and repository
+# ========================================================
+- name: Create directory for Docker keyrings
+  become: yes
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Add Docker GPG key
+  become: yes
+  ansible.builtin.shell: |
+    if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+    fi
+
+- name: Add Docker repository for Ubuntu 24.04 (noble)
+  become: yes
+  ansible.builtin.shell: |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list
+
+- name: Update apt cache
+  become: yes
+  ansible.builtin.shell: apt-get update -y
+
+# ========================================================
+# Install Docker CE + Compose Plugin
+# ========================================================
+- name: Install Docker CE and Compose plugin
+  become: yes
+  ansible.builtin.shell: |
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  register: docker_install
+  ignore_errors: yes
+
+# ========================================================
+# Fallback if Docker CE not available
+# ========================================================
+- name: Fallback install docker.io
+  become: yes
+  ansible.builtin.shell: apt-get install -y docker.io
+  when: docker_install.rc != 0
+
+# ========================================================
+# Manually install Docker Compose v2 binary (guaranteed)
+# ========================================================
+- name: Ensure Docker Compose v2 binary installed
+  become: yes
+  ansible.builtin.shell: |
+    mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -SL https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-x86_64 \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
   args:
-    creates: /etc/apt/keyrings/docker.gpg
+    creates: /usr/local/lib/docker/cli-plugins/docker-compose
 
-- name: Add Docker repository
-  ansible.builtin.copy:
-    dest: /etc/apt/sources.list.d/docker.list
-    content: |
-      deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable
+# ========================================================
+# Verify Docker installation
+# ========================================================
+- name: Verify Docker and Compose installation
+  become: yes
+  ansible.builtin.shell: |
+    docker --version && docker compose version
+  register: docker_check
 
-- name: Install Docker Engine and Compose v2
-  apt:
-    name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-buildx-plugin
-      - docker-compose-plugin
-    state: present
-    update_cache: true
+- name: Show installed versions
+  ansible.builtin.debug:
+    msg: "{{ docker_check.stdout_lines }}"
 
-- name: Ensure docker service is running
-  service:
+# ========================================================
+# Enable & start Docker service (safe systemd)
+# ========================================================
+- name: Ensure Docker service is enabled and running
+  become: yes
+  ansible.builtin.systemd:
     name: docker
-    state: started
     enabled: true
+    state: started
+  register: docker_service_status
+  ignore_errors: yes
+
+- name: Debug Docker service status
+  ansible.builtin.debug:
+    msg: "Docker service status: {{ docker_service_status }}"
 
 # ========================================================
-# 📦 Deploy Application using Docker Compose
+# Ensure Docker Compose Project Directory
 # ========================================================
+- name: Define default project path
+  set_fact:
+    compose_project_path: "{{ compose_project_path | default('/opt/myapp') }}"
 
-- name: Create project directory for Docker Compose
-  file:
+- name: Ensure project directory exists
+  become: yes
+  ansible.builtin.file:
     path: "{{ compose_project_path }}"
     state: directory
     mode: '0755'
 
+- name: Check project directory status
+  become: yes
+  ansible.builtin.stat:
+    path: "{{ compose_project_path }}"
+  register: project_dir_check
+
+- name: Fail if project directory was not created
+  ansible.builtin.fail:
+    msg: "❌ Project directory {{ compose_project_path }} not found even after creation attempt!"
+  when: not project_dir_check.stat.exists
+
+# ========================================================
+# Template docker-compose.yaml dynamically
+# ========================================================
 - name: Template docker-compose.yaml
-  template:
+  become: yes
+  ansible.builtin.template:
     src: docker-compose.yaml.j2
     dest: "{{ compose_project_path }}/docker-compose.yaml"
     mode: '0644'
 
-- name: Deploy application with Docker Compose v2
-  community.docker.docker_compose:
-    project_src: "{{ compose_project_path }}"
-    state: present
-
 # ========================================================
-# 🌐 Install and Configure Nginx + Certbot (certonly)
+# Deploy application with Docker Compose v2
 # ========================================================
-
-- name: Install Nginx and Certbot
-  apt:
-    name:
-      - nginx
-      - certbot
-    state: present
-    update_cache: true
-
-- name: Create webroot for Certbot HTTP challenge
-  file:
-    path: "{{ certbot_webroot_path }}"
-    state: directory
-    mode: '0755'
-
-# --------------------------------------------------------
-# 🔒 Obtain SSL Certificate (Certbot certonly mode)
-# --------------------------------------------------------
-- name: Obtain Let's Encrypt SSL certificate using Certbot
-  ansible.builtin.command:
-    cmd: >
-      certbot certonly
-      --non-interactive
-      --agree-tos
-      --email {{ email }}
-      --webroot -w {{ certbot_webroot_path }}
-      -d {{ server_name }}
+- name: Deploy application using Docker Compose v2
+  become: yes
+  ansible.builtin.shell: |
+    docker compose -f "{{ compose_project_path }}/docker-compose.yaml" up -d
   args:
-    creates: "/etc/letsencrypt/live/{{ server_name }}/fullchain.pem"
-  register: certbot_result
+    chdir: "{{ compose_project_path }}"
+  register: compose_output
+  ignore_errors: no
 
-# --------------------------------------------------------
-# 🧩 Configure Nginx with the new certificate
-# --------------------------------------------------------
-- name: Template Nginx configuration
-  template:
-    src: nginx.conf.j2
-    dest: "{{ nginx_sites_available }}/{{ server_name }}"
-    mode: '0644'
-  notify: reload nginx
-
-- name: Enable Nginx site
-  file:
-    src: "{{ nginx_sites_available }}/{{ server_name }}"
-    dest: "{{ nginx_sites_enabled }}/{{ server_name }}"
-    state: link
-  notify: reload nginx
-
-- name: Disable default Nginx site (optional)
-  file:
-    path: "{{ nginx_sites_enabled }}/default"
-    state: absent
-  notify: reload nginx
-
+- name: Debug deployment output
+  ansible.builtin.debug:
+    var: compose_output.stdout_lines
