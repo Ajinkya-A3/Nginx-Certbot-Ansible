@@ -99,12 +99,6 @@
     name: docker
     enabled: true
     state: started
-  register: docker_service_status
-  ignore_errors: yes
-
-- name: Debug Docker service status
-  ansible.builtin.debug:
-    msg: "Docker service status: {{ docker_service_status }}"
 
 # ========================================================
 # Ensure Docker Compose Project Directory
@@ -119,17 +113,6 @@
     path: "{{ compose_project_path }}"
     state: directory
     mode: '0755'
-
-- name: Check project directory status
-  become: yes
-  ansible.builtin.stat:
-    path: "{{ compose_project_path }}"
-  register: project_dir_check
-
-- name: Fail if project directory was not created
-  ansible.builtin.fail:
-    msg: "❌ Project directory {{ compose_project_path }} not found even after creation attempt!"
-  when: not project_dir_check.stat.exists
 
 # ========================================================
 # Template docker-compose.yaml dynamically
@@ -151,8 +134,82 @@
   args:
     chdir: "{{ compose_project_path }}"
   register: compose_output
-  ignore_errors: no
 
 - name: Debug deployment output
   ansible.builtin.debug:
     var: compose_output.stdout_lines
+
+# ========================================================
+# 🌐 Install Nginx & Certbot
+# ========================================================
+- name: Install Nginx and Certbot
+  become: yes
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - python3-certbot-nginx
+      - certbot
+    state: present
+    update_cache: true
+
+# ========================================================
+# 🔒 Create webroot for Certbot challenge
+# ========================================================
+- name: Create webroot for Certbot HTTP challenge
+  become: yes
+  ansible.builtin.file:
+    path: "{{ certbot_webroot_path }}"
+    state: directory
+    mode: '0755'
+
+# ========================================================
+# 🌍 Template Nginx configuration for Let's Encrypt + reverse proxy
+# ========================================================
+- name: Template Nginx configuration
+  become: yes
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_sites_available }}/{{ server_name }}"
+    mode: '0644'
+  notify: reload nginx
+
+- name: Enable Nginx site
+  become: yes
+  ansible.builtin.file:
+    src: "{{ nginx_sites_available }}/{{ server_name }}"
+    dest: "{{ nginx_sites_enabled }}/{{ server_name }}"
+    state: link
+  notify: reload nginx
+
+# ========================================================
+# 🔑 Obtain Let's Encrypt SSL certificate
+# ========================================================
+- name: Obtain Let's Encrypt SSL certificate using Certbot
+  become: yes
+  ansible.builtin.command:
+    cmd: >
+      certbot certonly
+      --non-interactive
+      --agree-tos
+      --email {{ email }}
+      --webroot -w {{ certbot_webroot_path }}
+      -d {{ server_name }}
+  args:
+    creates: "/etc/letsencrypt/live/{{ server_name }}/fullchain.pem"
+  register: certbot_result
+
+- name: Debug Certbot output
+  ansible.builtin.debug:
+    var: certbot_result.stdout_lines
+
+# ========================================================
+# 🔁 Reload Nginx after SSL
+# ========================================================
+- name: Reload Nginx to apply new SSL certificate
+  become: yes
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  when: certbot_result is succeeded
+
+
