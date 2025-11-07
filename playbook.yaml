@@ -1,0 +1,6 @@
+---
+- name: Deploy webserver DNS
+  hosts: web
+  become: true
+  roles:
+    - tls-nginx-deploy
